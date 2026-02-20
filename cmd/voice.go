@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -67,18 +68,29 @@ func (c *VoiceListCmd) Run(cfg *config.AppConfig) error {
 // --- voice record ---
 
 var sampleTexts = map[string]string{
-	"zh":      "今天天气真不错，适合出去走走。技术正在以前所未有的速度发展，改变着我们的生活方式。",
-	"en":      "The quick brown fox jumps over the lazy dog. Technology is evolving faster than ever before.",
-	"ja":      "今日はとても良い天気ですね。テクノロジーはかつてないスピードで進化しています。",
-	"Chinese": "今天天气真不错，适合出去走走。技术正在以前所未有的速度发展，改变着我们的生活方式。",
-	"English": "The quick brown fox jumps over the lazy dog. Technology is evolving faster than ever before.",
-	"Japanese": "今日はとても良い天気ですね。テクノロジーはかつてないスピードで進化しています。",
+	"zh": "今天天气真不错，适合出去走走。技术正在以前所未有的速度发展，改变着我们的生活方式。",
+	"en": "The quick brown fox jumps over the lazy dog. Technology is evolving faster than ever before, reshaping how we live and work.",
+	"ja": "今日はとても良い天気ですね。テクノロジーはかつてないスピードで進化しています。私たちの生活を大きく変えています。",
+	"ko": "오늘 날씨가 정말 좋네요, 산책하기 딱 좋아요. 기술은 전례 없는 속도로 발전하며 우리의 생활 방식을 바꾸고 있습니다.",
+	"de": "Das Wetter ist heute wirklich schön, perfekt für einen Spaziergang. Die Technologie entwickelt sich schneller als je zuvor und verändert unsere Lebensweise.",
+	"fr": "Le temps est vraiment magnifique aujourd'hui, parfait pour une promenade. La technologie évolue plus vite que jamais et transforme notre façon de vivre.",
+	"es": "El tiempo está muy bonito hoy, perfecto para dar un paseo. La tecnología avanza más rápido que nunca y está cambiando nuestra forma de vivir.",
+	"pt": "O tempo está muito bom hoje, perfeito para um passeio. A tecnologia está avançando mais rápido do que nunca e mudando a nossa forma de viver.",
+	"it": "Il tempo è davvero bello oggi, perfetto per una passeggiata. La tecnologia si evolve più velocemente che mai e sta cambiando il nostro modo di vivere.",
+	"ru": "Сегодня прекрасная погода, отлично подходит для прогулки. Технологии развиваются быстрее, чем когда-либо, меняя наш образ жизни.",
+	"pl": "Pogoda jest dziś naprawdę piękna, idealna na spacer. Technologia rozwija się szybciej niż kiedykolwiek, zmieniając nasz sposób życia.",
+	"sv": "Vädret är riktigt fint idag, perfekt för en promenad. Tekniken utvecklas snabbare än någonsin och förändrar vårt sätt att leva.",
+	"da": "Vejret er virkelig dejligt i dag, perfekt til en gåtur. Teknologien udvikler sig hurtigere end nogensinde og ændrer vores måde at leve på.",
+	"fi": "Sää on tänään todella kaunis, täydellinen kävelylle. Teknologia kehittyy nopeammin kuin koskaan ja muuttaa elämäntapaamme.",
+	"no": "Været er virkelig fint i dag, perfekt for en spasertur. Teknologien utvikler seg raskere enn noensinne og endrer måten vi lever på.",
+	"cs": "Počasí je dnes opravdu krásné, ideální na procházku. Technologie se vyvíjejí rychleji než kdy dříve a mění náš způsob života.",
+	"is": "Veðrið er virkilega fallegt í dag, fullkomið fyrir göngutúr. Tæknin þróast hraðar en nokkru sinni fyrr og breytir lífsstíl okkar.",
 }
 
 type VoiceRecordCmd struct {
-	Lang     string `short:"l" default:"zh" help:"Language for sample text (zh, en, ja)"`
+	Lang     string `short:"l" help:"Language for sample text (zh, en, ja). Auto-detected from system if omitted."`
 	Name     string `short:"n" help:"Name for the cloned voice"`
-	Duration int    `short:"d" default:"10" help:"Recording duration in seconds"`
+	Duration int    `short:"d" default:"15" help:"Recording duration in seconds (10-20s recommended)"`
 	File     string `short:"f" help:"Use existing audio file instead of recording"`
 }
 
@@ -86,6 +98,13 @@ func (c *VoiceRecordCmd) Run(cfg *config.AppConfig) error {
 	apiKey, err := cfg.RequireAPIKey()
 	if err != nil {
 		return err
+	}
+
+	// Resolve language
+	lang := c.Lang
+	if lang == "" {
+		lang = detectSystemLang()
+		ui.Info("%s %s", ui.Dim("language"), ui.Key(lang))
 	}
 
 	var audioData []byte
@@ -99,7 +118,7 @@ func (c *VoiceRecordCmd) Run(cfg *config.AppConfig) error {
 		ui.Info("Using audio file: %s", ui.Key(c.File))
 	} else {
 		// Record from microphone
-		sample, ok := sampleTexts[c.Lang]
+		sample, ok := sampleTexts[lang]
 		if !ok {
 			sample = sampleTexts["en"]
 		}
@@ -243,6 +262,31 @@ func extractNameFromVoiceID(id string) string {
 		return id
 	}
 	return rest[:idx]
+}
+
+// localeToLang maps macOS locale prefixes to language codes
+var localeToLang = map[string]string{
+	"zh": "zh", "en": "en", "ja": "ja", "ko": "ko",
+	"de": "de", "fr": "fr", "es": "es", "pt": "pt",
+	"it": "it", "ru": "ru", "pl": "pl", "sv": "sv",
+	"da": "da", "fi": "fi", "nb": "no", "nn": "no",
+	"cs": "cs", "is": "is",
+}
+
+// detectSystemLang returns a language code based on macOS system locale
+func detectSystemLang() string {
+	// macOS: defaults read -g AppleLocale → "zh_CN", "en_US", "ja_JP", etc.
+	out, err := exec.Command("defaults", "read", "-g", "AppleLocale").Output()
+	if err != nil {
+		return "en"
+	}
+	locale := strings.TrimSpace(string(out))
+	// Extract prefix before "_" (e.g. "zh_CN" → "zh", "nb_NO" → "nb")
+	prefix := strings.SplitN(locale, "_", 2)[0]
+	if lang, ok := localeToLang[prefix]; ok {
+		return lang
+	}
+	return "en"
 }
 
 // normalizeLang converts shorthand to DashScope language names
