@@ -22,7 +22,6 @@ import (
 type ListenCmd struct {
 	Channel []string `short:"c" help:"Channel names or IDs to listen to (repeatable, default: all)"`
 	Voice   string   `short:"v" help:"Default voice for TTS"`
-	Lang    string   `short:"l" help:"Language hint (auto-detected from system if omitted)"`
 	Speed   float64  `short:"s" default:"1.2" help:"Speech rate (0.5-2.0)"`
 	NoChime bool     `help:"Disable notification chime sound"`
 }
@@ -116,12 +115,6 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 		return defaultVoice, false
 	}
 
-	// Resolve language
-	lang := c.Lang
-	if lang == "" {
-		lang = detectSystemLang()
-	}
-
 	ttsClient := dashscope.NewRealtimeClient(apiKey)
 
 	ui.Success("Listening on Slack")
@@ -131,7 +124,6 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	} else {
 		ui.KV("Channels", "all")
 	}
-	ui.KV("Lang", lang)
 	if len(voiceMap) > 0 {
 		ui.KV("Voice map", fmt.Sprintf("%d users", len(voiceMap)))
 	}
@@ -201,7 +193,7 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 						Model:      model,
 						Voice:      voice,
 						Text:       spoken,
-						Lang:       lang,
+						Lang:       "auto",
 						SpeechRate: c.Speed,
 					}
 					ttsCtx, ttsCancel := context.WithTimeout(context.Background(), 30*time.Second)
