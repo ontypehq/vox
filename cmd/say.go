@@ -16,11 +16,13 @@ import (
 )
 
 type SayCmd struct {
-	Text   string `arg:"" help:"Text to speak"`
-	Voice  string `short:"v" help:"Voice ID (system name or cloned voice ID)"`
-	Lang   string `short:"l" default:"auto" help:"Language hint (auto, Chinese, English, Japanese, ...)"`
-	Output string `short:"o" help:"Save audio to file instead of playing"`
-	NoCache bool  `help:"Skip audio cache"`
+	Text     string  `arg:"" help:"Text to speak"`
+	Voice    string  `short:"v" help:"Voice ID (system name or cloned voice ID)"`
+	Lang     string  `short:"l" default:"auto" help:"Language hint (auto, Chinese, English, Japanese, ...)"`
+	Instruct string  `short:"i" help:"Voice style instruction (e.g. 'warm and expressive, moderate pace')"`
+	Speed    float64 `short:"s" default:"1.0" help:"Speech rate (0.5-2.0)"`
+	Output   string  `short:"o" help:"Save audio to file instead of playing"`
+	NoCache  bool    `help:"Skip audio cache"`
 }
 
 func (c *SayCmd) Run(cfg *config.AppConfig) error {
@@ -38,11 +40,14 @@ func (c *SayCmd) Run(cfg *config.AppConfig) error {
 		voice = "Cherry" // default system voice
 	}
 
-	// Pick model based on voice type
+	// Pick model based on voice type and instruct mode
 	model := dashscope.ModelForVoice(voice)
+	if c.Instruct != "" && dashscope.IsSystemVoice(voice) {
+		model = dashscope.ModelInstructRealtime
+	}
 
 	// Check cache
-	cacheKey := fmt.Sprintf("%s:%s:%s:%s", model, voice, c.Lang, c.Text)
+	cacheKey := fmt.Sprintf("%s:%s:%s:%s:%s:%.1f", model, voice, c.Lang, c.Instruct, c.Text, c.Speed)
 	cacheHash := sha256.Sum256([]byte(cacheKey))
 	cachePath := filepath.Join(cfg.Dir, "cache", hex.EncodeToString(cacheHash[:])+".pcm")
 
@@ -66,7 +71,15 @@ func (c *SayCmd) Run(cfg *config.AppConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	err = client.StreamTTS(ctx, model, voice, c.Text, c.Lang, func(pcm []byte) {
+	opts := dashscope.TTSOptions{
+		Model:       model,
+		Voice:       voice,
+		Text:        c.Text,
+		Lang:        c.Lang,
+		Instruct:    c.Instruct,
+		SpeechRate:  c.Speed,
+	}
+	err = client.StreamTTS(ctx, opts, func(pcm []byte) {
 		if !firstChunk {
 			firstChunk = true
 			ui.Info("%s %s", ui.Dim("first audio"), ui.Dim(time.Since(t0).Round(time.Millisecond).String()))

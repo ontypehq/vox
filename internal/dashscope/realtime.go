@@ -11,11 +11,22 @@ import (
 )
 
 const (
-	wsEndpoint       = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
-	ModelFlashRealtime = "qwen3-tts-flash-realtime"
-	ModelVCRealtime    = "qwen3-tts-vc-realtime-2026-01-15"
-	ModelEnrollment    = "qwen-voice-enrollment"
+	wsEndpoint            = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+	ModelFlashRealtime    = "qwen3-tts-flash-realtime"
+	ModelInstructRealtime = "qwen3-tts-instruct-flash-realtime"
+	ModelVCRealtime       = "qwen3-tts-vc-realtime-2026-01-15"
+	ModelEnrollment       = "qwen-voice-enrollment"
 )
+
+// TTSOptions holds all parameters for a TTS request
+type TTSOptions struct {
+	Model      string
+	Voice      string
+	Text       string
+	Lang       string
+	Instruct   string
+	SpeechRate float64
+}
 
 // RealtimeClient handles WebSocket streaming TTS
 type RealtimeClient struct {
@@ -26,7 +37,6 @@ func NewRealtimeClient(apiKey string) *RealtimeClient {
 	return &RealtimeClient{apiKey: apiKey}
 }
 
-// wsMessage represents a generic WebSocket protocol message
 type wsMessage struct {
 	EventID string `json:"event_id,omitempty"`
 	Type    string `json:"type"`
@@ -39,14 +49,16 @@ type sessionUpdate struct {
 }
 
 type sessionParams struct {
-	Voice          string  `json:"voice"`
-	ResponseFormat string  `json:"response_format,omitempty"`
-	SampleRate     int     `json:"sample_rate,omitempty"`
-	Mode           string  `json:"mode,omitempty"`
-	LanguageType   string  `json:"language_type,omitempty"`
-	Volume         int     `json:"volume,omitempty"`
-	SpeechRate     float64 `json:"speech_rate,omitempty"`
-	PitchRate      float64 `json:"pitch_rate,omitempty"`
+	Voice                string  `json:"voice"`
+	ResponseFormat       string  `json:"response_format,omitempty"`
+	SampleRate           int     `json:"sample_rate,omitempty"`
+	Mode                 string  `json:"mode,omitempty"`
+	LanguageType         string  `json:"language_type,omitempty"`
+	Volume               int     `json:"volume,omitempty"`
+	SpeechRate           float64 `json:"speech_rate,omitempty"`
+	PitchRate            float64 `json:"pitch_rate,omitempty"`
+	Instructions         string  `json:"instructions,omitempty"`
+	OptimizeInstructions bool    `json:"optimize_instructions,omitempty"`
 }
 
 type textAppend struct {
@@ -62,9 +74,8 @@ type serverMessage struct {
 }
 
 // StreamTTS opens a WebSocket, sends text, and streams PCM audio chunks via callback.
-// The callback receives raw PCM bytes (24000Hz 16-bit mono).
-func (rc *RealtimeClient) StreamTTS(ctx context.Context, model, voice, text, lang string, onAudio func([]byte)) error {
-	url := fmt.Sprintf("%s?model=%s", wsEndpoint, model)
+func (rc *RealtimeClient) StreamTTS(ctx context.Context, opts TTSOptions, onAudio func([]byte)) error {
+	url := fmt.Sprintf("%s?model=%s", wsEndpoint, opts.Model)
 
 	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{
@@ -75,51 +86,51 @@ func (rc *RealtimeClient) StreamTTS(ctx context.Context, model, voice, text, lan
 		return fmt.Errorf("websocket dial: %w", err)
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(1 << 20) // 1MB — audio chunks can be large
+	conn.SetReadLimit(1 << 20) // 1MB
 
-	// Read session.created
 	if err := rc.expectMessage(ctx, conn, "session.created"); err != nil {
 		return err
 	}
 
-	// Send session.update
 	langType := "auto"
-	if lang != "" {
-		langType = lang
+	if opts.Lang != "" {
+		langType = opts.Lang
 	}
-	update := sessionUpdate{
-		Type: "session.update",
-		Session: sessionParams{
-			Voice:          voice,
-			ResponseFormat: "pcm",
-			SampleRate:     24000,
-			Mode:           "server_commit",
-			LanguageType:   langType,
-			Volume:         50,
-			SpeechRate:     1.0,
-			PitchRate:      1.0,
-		},
+	speechRate := opts.SpeechRate
+	if speechRate == 0 {
+		speechRate = 1.0
 	}
+
+	session := sessionParams{
+		Voice:          opts.Voice,
+		ResponseFormat: "pcm",
+		SampleRate:     24000,
+		Mode:           "server_commit",
+		LanguageType:   langType,
+		Volume:         50,
+		SpeechRate:     speechRate,
+		PitchRate:      1.0,
+	}
+	if opts.Instruct != "" {
+		session.Instructions = opts.Instruct
+		session.OptimizeInstructions = true
+	}
+
+	update := sessionUpdate{Type: "session.update", Session: session}
 	if err := rc.writeJSON(ctx, conn, update); err != nil {
 		return fmt.Errorf("session.update: %w", err)
 	}
 
-	// Send text
-	append := textAppend{
-		Type: "input_text_buffer.append",
-		Text: text,
-	}
-	if err := rc.writeJSON(ctx, conn, append); err != nil {
+	appendMsg := textAppend{Type: "input_text_buffer.append", Text: opts.Text}
+	if err := rc.writeJSON(ctx, conn, appendMsg); err != nil {
 		return fmt.Errorf("text append: %w", err)
 	}
 
-	// Send finish
 	finish := wsMessage{Type: "session.finish"}
 	if err := rc.writeJSON(ctx, conn, finish); err != nil {
 		return fmt.Errorf("session.finish: %w", err)
 	}
 
-	// Read audio chunks until session.finished
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -140,7 +151,6 @@ func (rc *RealtimeClient) StreamTTS(ctx context.Context, model, voice, text, lan
 			onAudio(pcm)
 
 		case "response.done":
-			// Single response done, keep reading for session.finished
 			continue
 
 		case "session.finished":
