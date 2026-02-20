@@ -1,0 +1,33 @@
+package main
+
+import (
+	"os"
+
+	"github.com/alecthomas/kong"
+	"github.com/ontypehq/vox/cmd"
+	"github.com/ontypehq/vox/internal/config"
+	"github.com/ontypehq/vox/internal/ui"
+)
+
+var cli struct {
+	Auth  cmd.AuthCmd  `cmd:"" help:"Manage authentication"`
+	Say   cmd.SayCmd   `cmd:"" help:"Speak text with TTS"`
+	Voice cmd.VoiceCmd `cmd:"" help:"Manage voice profiles"`
+}
+
+func main() {
+	ctx := kong.Parse(&cli,
+		kong.Name("vox"),
+		kong.Description("Voice clone TTS — powered by Qwen3-TTS"),
+		kong.UsageOnError(),
+	)
+
+	cfg, err := config.Load()
+	if err != nil {
+		ui.Error("Failed to load config: %v", err)
+		os.Exit(1)
+	}
+
+	err = ctx.Run(cfg)
+	ctx.FatalIfErrorf(err)
+}
