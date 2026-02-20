@@ -14,6 +14,7 @@ var cli struct {
 	Say   cmd.SayCmd   `cmd:"" help:"Speak text with TTS"`
 	Hear  cmd.HearCmd  `cmd:"" help:"Transcribe speech to text"`
 	Voice cmd.VoiceCmd `cmd:"" help:"Manage voice profiles"`
+	Cache cmd.CacheCmd `cmd:"" help:"Manage audio cache"`
 }
 
 func main() {
