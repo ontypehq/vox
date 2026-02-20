@@ -75,7 +75,6 @@ func (sp *StreamPlayer) Close() {
 	sp.pw.Close()
 
 	// Wait for oto player to finish — poll IsPlaying with a safety timeout.
-	// IsPlaying becomes false once the reader returns EOF and internal buffer drains.
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
@@ -83,9 +82,11 @@ func (sp *StreamPlayer) Close() {
 			return
 		default:
 			if !sp.player.IsPlaying() {
-				// Extra wait: oto may report not-playing slightly before
-				// the audio hardware finishes the last samples.
-				time.Sleep(150 * time.Millisecond)
+				// oto may report not-playing while audio hardware still has
+				// samples in flight. Wait based on oto's internal buffer size.
+				// Default buffer is 8192 bytes. At 24kHz 16-bit mono = 48000 bytes/s,
+				// that's ~170ms. Add generous margin for OS audio pipeline.
+				time.Sleep(500 * time.Millisecond)
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
