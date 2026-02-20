@@ -75,6 +75,7 @@ func (rc *RealtimeClient) StreamTTS(ctx context.Context, model, voice, text, lan
 		return fmt.Errorf("websocket dial: %w", err)
 	}
 	defer conn.CloseNow()
+	conn.SetReadLimit(1 << 20) // 1MB — audio chunks can be large
 
 	// Read session.created
 	if err := rc.expectMessage(ctx, conn, "session.created"); err != nil {
