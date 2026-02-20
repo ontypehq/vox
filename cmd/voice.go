@@ -145,10 +145,10 @@ func (c *VoiceRecordCmd) Run(cfg *config.AppConfig) error {
 		}
 	}
 
-	// Determine name
+	// Determine name (max 16 chars, alphanumeric + underscore only)
 	name := c.Name
 	if name == "" {
-		name = fmt.Sprintf("vox-%d", time.Now().Unix())
+		name = fmt.Sprintf("vox%d", time.Now().Unix()%1e10)
 	}
 
 	// Wrap raw PCM in WAV if needed (enrollment expects audio file format)
