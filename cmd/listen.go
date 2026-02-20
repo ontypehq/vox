@@ -99,22 +99,21 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	// Voice mapping from config: user display name or ID → voice
 	voiceMap := cfg.Config.Listen.VoiceMap
 
-	resolveVoice := func(userID, displayName string) string {
-		// Check by user ID first, then display name
+	// Returns (voice, mapped). mapped=true means the user has a dedicated voice.
+	resolveVoice := func(userID, displayName string) (string, bool) {
 		if v, ok := voiceMap[userID]; ok {
-			return v
+			return v, true
 		}
 		if v, ok := voiceMap[displayName]; ok {
-			return v
+			return v, true
 		}
-		// Case-insensitive fallback
 		lower := strings.ToLower(displayName)
 		for k, v := range voiceMap {
 			if strings.ToLower(k) == lower {
-				return v
+				return v, true
 			}
 		}
-		return defaultVoice
+		return defaultVoice, false
 	}
 
 	// Resolve language
@@ -171,11 +170,17 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 					text = cleanSlackText(text)
 					sender := getName(ev.User)
 					chName := getChannelName(ev.Channel)
-					voice := resolveVoice(ev.User, sender)
+					voice, mapped := resolveVoice(ev.User, sender)
 					model := dashscope.ModelForVoice(voice)
 
-					// Format: "<message>, from <sender> in <channel>"
-					spoken := fmt.Sprintf("%s. From %s, in %s.", text, sender, chName)
+					// If voice is mapped to this user, skip the "from X in Y" fence —
+					// the voice itself identifies who's speaking.
+					var spoken string
+					if mapped {
+						spoken = text
+					} else {
+						spoken = fmt.Sprintf("%s. From %s, in %s.", text, sender, chName)
+					}
 
 					ui.Info("%s %s [%s] %s: %s",
 						ui.Dim(time.Now().Format("15:04")),
@@ -185,8 +190,8 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 						text,
 					)
 
-					// Chime before message
-					if !c.NoChime {
+					// Chime before message (skip if voice is mapped)
+					if !c.NoChime && !mapped {
 						playChime()
 					}
 
