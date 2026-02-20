@@ -3,6 +3,7 @@ package audio
 import (
 	"io"
 	"sync"
+	"time"
 
 	"github.com/ebitengine/oto/v3"
 )
@@ -59,15 +60,7 @@ func NewStreamPlayer() *StreamPlayer {
 		done:   make(chan struct{}),
 	}
 
-	// Start playback in background
-	go func() {
-		player.Play()
-		// Wait until all audio is played
-		for player.IsPlaying() {
-			// busy-wait is fine here, oto handles scheduling
-		}
-		sp.once.Do(func() { close(sp.done) })
-	}()
+	player.Play()
 
 	return sp
 }
@@ -77,10 +70,27 @@ func (sp *StreamPlayer) Write(pcm []byte) {
 	sp.pw.Write(pcm)
 }
 
-// Close signals end of audio data and waits for playback to finish
+// Close signals end of audio data and waits for playback to fully drain
 func (sp *StreamPlayer) Close() {
 	sp.pw.Close()
-	<-sp.done
+
+	// Wait for oto player to finish — poll IsPlaying with a safety timeout.
+	// IsPlaying becomes false once the reader returns EOF and internal buffer drains.
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			return
+		default:
+			if !sp.player.IsPlaying() {
+				// Extra wait: oto may report not-playing slightly before
+				// the audio hardware finishes the last samples.
+				time.Sleep(150 * time.Millisecond)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 // AllPCM collects all written PCM bytes (for caching). Must be used via WriteTee.
