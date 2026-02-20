@@ -18,13 +18,18 @@ type SlackConfig struct {
 	AppToken string `json:"app_token,omitempty"`
 }
 
-type Config struct {
-	Services Services `json:"services"`
-}
-
 type Services struct {
 	DashScope DashScopeConfig `json:"dashscope,omitempty"`
 	Slack     SlackConfig     `json:"slack,omitempty"`
+}
+
+type ListenConfig struct {
+	VoiceMap map[string]string `json:"voice_map,omitempty"` // slack user ID or display name → voice
+}
+
+type Config struct {
+	Services Services     `json:"services"`
+	Listen   ListenConfig `json:"listen,omitempty"`
 }
 
 type State struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,9 +20,10 @@ import (
 )
 
 type ListenCmd struct {
-	Channel string `short:"c" help:"Channel name or ID to listen to (default: all)"`
-	Voice   string `short:"v" help:"Voice to use for TTS"`
-	Speed   float64 `short:"s" default:"1.2" help:"Speech rate (0.5-2.0)"`
+	Channel []string `short:"c" help:"Channel names or IDs to listen to (repeatable, default: all)"`
+	Voice   string   `short:"v" help:"Default voice for TTS"`
+	Speed   float64  `short:"s" default:"1.2" help:"Speech rate (0.5-2.0)"`
+	NoChime bool     `help:"Disable notification chime sound"`
 }
 
 func (c *ListenCmd) Run(cfg *config.AppConfig) error {
@@ -34,13 +36,13 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 		return err
 	}
 
-	// Resolve voice
-	voice := c.Voice
-	if voice == "" {
-		voice = cfg.State.LastVoice
+	// Default voice
+	defaultVoice := c.Voice
+	if defaultVoice == "" {
+		defaultVoice = cfg.State.LastVoice
 	}
-	if voice == "" {
-		voice = "Cherry"
+	if defaultVoice == "" {
+		defaultVoice = "Cherry"
 	}
 
 	api := slack.New(botToken, slack.OptionAppLevelToken(appToken))
@@ -53,14 +55,17 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	}
 	botUserID := authResp.UserID
 
-	// Resolve channel filter
-	var filterChannelID string
-	if c.Channel != "" {
-		filterChannelID = c.resolveChannel(api, c.Channel)
+	// Resolve channel filters
+	filterChannels := map[string]bool{}
+	for _, ch := range c.Channel {
+		id := resolveChannel(api, ch)
+		filterChannels[id] = true
 	}
 
-	// Build user name cache
+	// Build caches
 	userNames := map[string]string{}
+	channelNames := map[string]string{}
+
 	getName := func(userID string) string {
 		if name, ok := userNames[userID]; ok {
 			return name
@@ -79,17 +84,51 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 		return "someone"
 	}
 
+	getChannelName := func(channelID string) string {
+		if name, ok := channelNames[channelID]; ok {
+			return name
+		}
+		if info, err := api.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: channelID}); err == nil {
+			channelNames[channelID] = info.Name
+			return info.Name
+		}
+		return channelID
+	}
+
+	// Voice mapping from config: user display name or ID → voice
+	voiceMap := cfg.Config.Listen.VoiceMap
+
+	resolveVoice := func(userID, displayName string) string {
+		// Check by user ID first, then display name
+		if v, ok := voiceMap[userID]; ok {
+			return v
+		}
+		if v, ok := voiceMap[displayName]; ok {
+			return v
+		}
+		// Case-insensitive fallback
+		lower := strings.ToLower(displayName)
+		for k, v := range voiceMap {
+			if strings.ToLower(k) == lower {
+				return v
+			}
+		}
+		return defaultVoice
+	}
+
 	ttsClient := dashscope.NewRealtimeClient(apiKey)
-	model := dashscope.ModelForVoice(voice)
 
 	ui.Success("Listening on Slack")
-	ui.KV("Voice", voice)
-	if filterChannelID != "" {
-		ui.KV("Channel", c.Channel)
+	ui.KV("Voice", defaultVoice)
+	if len(filterChannels) > 0 {
+		ui.KV("Channels", strings.Join(c.Channel, ", "))
 	} else {
-		ui.KV("Channel", "all")
+		ui.KV("Channels", "all")
 	}
-	ui.Info("%s", ui.Dim("Press Ctrl+C to stop"))
+	if len(voiceMap) > 0 {
+		ui.KV("Voice map", fmt.Sprintf("%d users", len(voiceMap)))
+	}
+	ui.Info("%s", ui.Dim("Ctrl+C to stop"))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -106,13 +145,13 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 
 				switch ev := eventsAPIEvent.InnerEvent.Data.(type) {
 				case *slackevents.MessageEvent:
-					// Skip bot's own messages, bot messages, and message changes
+					// Skip bot's own messages, bot messages, and edits
 					if ev.User == botUserID || ev.BotID != "" || ev.SubType != "" {
 						continue
 					}
 
 					// Channel filter
-					if filterChannelID != "" && ev.Channel != filterChannelID {
+					if len(filterChannels) > 0 && !filterChannels[ev.Channel] {
 						continue
 					}
 
@@ -121,13 +160,27 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 						continue
 					}
 
-					// Clean up slack formatting
 					text = cleanSlackText(text)
-
 					sender := getName(ev.User)
-					spoken := fmt.Sprintf("%s says: %s", sender, text)
+					chName := getChannelName(ev.Channel)
+					voice := resolveVoice(ev.User, sender)
+					model := dashscope.ModelForVoice(voice)
 
-					ui.Info("%s %s: %s", ui.Dim(time.Now().Format("15:04")), ui.Key(sender), text)
+					// Format: "<message>, from <sender> in <channel>"
+					spoken := fmt.Sprintf("%s. From %s, in %s.", text, sender, chName)
+
+					ui.Info("%s %s [%s] %s: %s",
+						ui.Dim(time.Now().Format("15:04")),
+						ui.Dim(chName),
+						ui.Key(voice),
+						ui.Key(sender),
+						text,
+					)
+
+					// Chime before message
+					if !c.NoChime {
+						playChime()
+					}
 
 					// Speak it
 					player := audio.NewStreamPlayer()
@@ -165,13 +218,12 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	return nil
 }
 
-func (c *ListenCmd) resolveChannel(api *slack.Client, channel string) string {
+func resolveChannel(api *slack.Client, channel string) string {
+	channel = strings.TrimPrefix(channel, "#")
 	// If it looks like an ID already
 	if strings.HasPrefix(channel, "C") || strings.HasPrefix(channel, "G") || strings.HasPrefix(channel, "D") {
 		return channel
 	}
-	// Search by name
-	channel = strings.TrimPrefix(channel, "#")
 	params := &slack.GetConversationsParameters{Limit: 200}
 	channels, _, err := api.GetConversations(params)
 	if err != nil {
@@ -185,10 +237,50 @@ func (c *ListenCmd) resolveChannel(api *slack.Client, channel string) string {
 	return channel
 }
 
+// playChime generates a short notification tone (two-tone chime)
+func playChime() {
+	const (
+		sampleRate = audio.SampleRate // 24000
+		duration   = 120             // ms total
+		freq1      = 880             // A5
+		freq2      = 1320            // E6
+	)
+
+	samples := sampleRate * duration / 1000
+	pcm := make([]byte, samples*2) // 16-bit
+
+	half := samples / 2
+	for i := range samples {
+		freq := float64(freq1)
+		if i >= half {
+			freq = float64(freq2)
+		}
+
+		// Fade envelope
+		var env float64
+		pos := i % half
+		total := half
+		if pos < total/4 {
+			env = float64(pos) / float64(total/4) // attack
+		} else {
+			env = 1.0 - float64(pos-total/4)/float64(total*3/4) // decay
+		}
+
+		t := float64(i) / float64(sampleRate)
+		sample := int16(env * 3000 * math.Sin(2*math.Pi*freq*t))
+		pcm[i*2] = byte(sample)
+		pcm[i*2+1] = byte(sample >> 8)
+	}
+
+	player := audio.NewStreamPlayer()
+	player.Write(pcm)
+	player.Close()
+}
+
 // cleanSlackText removes slack markup like <@U123> mentions, <url|label> links, etc.
 func cleanSlackText(text string) string {
-	// Replace user mentions <@U123> with empty (we already prefix with sender name)
 	result := text
+	// Replace user mentions <@U123>
 	for {
 		start := strings.Index(result, "<@")
 		if start == -1 {
