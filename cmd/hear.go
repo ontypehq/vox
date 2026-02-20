@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ontypehq/vox/internal/audio"
@@ -17,6 +20,7 @@ type HearCmd struct {
 	File     string `short:"f" help:"Transcribe an existing audio file instead of recording"`
 	Duration int    `short:"d" default:"5" help:"Recording duration in seconds"`
 	Context  string `short:"c" help:"Text context to improve recognition (e.g. domain terms)"`
+	NoCache  bool   `help:"Skip transcription cache"`
 }
 
 func (c *HearCmd) Run(cfg *config.AppConfig) error {
@@ -26,6 +30,7 @@ func (c *HearCmd) Run(cfg *config.AppConfig) error {
 	}
 
 	var wavData []byte
+	var cacheKey string
 
 	if c.File != "" {
 		wavData, err = os.ReadFile(c.File)
@@ -33,6 +38,22 @@ func (c *HearCmd) Run(cfg *config.AppConfig) error {
 			return fmt.Errorf("read file: %w", err)
 		}
 		ui.Info("%s %s", ui.Dim("file"), ui.Key(c.File))
+
+		// Cache key = hash of file content + context
+		h := sha256.New()
+		h.Write(wavData)
+		h.Write([]byte(":" + c.Context))
+		cacheKey = hex.EncodeToString(h.Sum(nil))
+
+		// Check cache
+		if !c.NoCache {
+			cachePath := filepath.Join(cfg.Dir, "cache", "asr-"+cacheKey+".txt")
+			if cached, err := os.ReadFile(cachePath); err == nil {
+				ui.Info("%s", ui.Dim("cached"))
+				fmt.Println(string(cached))
+				return nil
+			}
+		}
 	} else {
 		ui.Info("Recording for %ds... %s", c.Duration, ui.Dim("(speak now)"))
 
@@ -64,6 +85,12 @@ func (c *HearCmd) Run(cfg *config.AppConfig) error {
 
 	elapsed := time.Since(t0).Round(time.Millisecond)
 	ui.Info("%s %s", ui.Dim("latency"), ui.Dim(elapsed.String()))
+
+	// Cache the result for file-based transcription
+	if cacheKey != "" && !c.NoCache && result.Text != "" {
+		cachePath := filepath.Join(cfg.Dir, "cache", "asr-"+cacheKey+".txt")
+		os.WriteFile(cachePath, []byte(result.Text), 0644)
+	}
 
 	// Output transcription to stdout (so it can be piped)
 	fmt.Println(result.Text)

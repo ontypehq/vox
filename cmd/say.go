@@ -49,10 +49,25 @@ func (c *SayCmd) Run(cfg *config.AppConfig) error {
 	// Check cache
 	cacheKey := fmt.Sprintf("%s:%s:%s:%s:%s:%.1f", model, voice, c.Lang, c.Instruct, c.Text, c.Speed)
 	cacheHash := sha256.Sum256([]byte(cacheKey))
-	cachePath := filepath.Join(cfg.Dir, "cache", hex.EncodeToString(cacheHash[:])+".pcm")
+	hashStr := hex.EncodeToString(cacheHash[:])
+	cachePath := filepath.Join(cfg.Dir, "cache", hashStr+".opus")
 
 	if !c.NoCache {
-		if data, err := os.ReadFile(cachePath); err == nil {
+		if opusData, err := os.ReadFile(cachePath); err == nil {
+			ui.Info("%s %s", ui.Dim("cached"), ui.Dim(voice))
+			pcmData, err := audio.DecodeOpusToPCM(opusData)
+			if err != nil {
+				// Fallback: try legacy .pcm cache
+				legacyPath := filepath.Join(cfg.Dir, "cache", hashStr+".pcm")
+				if pcmData, err = os.ReadFile(legacyPath); err != nil {
+					return fmt.Errorf("decode cache: %w", err)
+				}
+			}
+			return playPCM(pcmData, c.Output)
+		}
+		// Fallback: try legacy .pcm cache
+		legacyPath := filepath.Join(cfg.Dir, "cache", hashStr+".pcm")
+		if data, err := os.ReadFile(legacyPath); err == nil {
 			ui.Info("%s %s", ui.Dim("cached"), ui.Dim(voice))
 			return playPCM(data, c.Output)
 		}
@@ -94,9 +109,14 @@ func (c *SayCmd) Run(cfg *config.AppConfig) error {
 		return fmt.Errorf("TTS stream: %w", err)
 	}
 
-	// Cache the result
+	// Cache the result as opus
 	if !c.NoCache && len(collector.Bytes()) > 0 {
-		os.WriteFile(cachePath, collector.Bytes(), 0644)
+		if opusData, err := audio.EncodePCMToOpus(collector.Bytes()); err == nil {
+			os.WriteFile(cachePath, opusData, 0644)
+		} else {
+			// Fallback to raw PCM if ffmpeg unavailable
+			os.WriteFile(filepath.Join(cfg.Dir, "cache", hashStr+".pcm"), collector.Bytes(), 0644)
+		}
 	}
 
 	// Save output file if requested
