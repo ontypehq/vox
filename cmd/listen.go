@@ -24,6 +24,7 @@ type ListenCmd struct {
 	Voice   string   `short:"v" help:"Default voice for TTS"`
 	Speed   float64  `short:"s" default:"1.2" help:"Speech rate (0.5-2.0)"`
 	NoChime bool     `help:"Disable notification chime sound"`
+	Ignore  []string `help:"User IDs or display names to ignore (repeatable)"`
 }
 
 func (c *ListenCmd) Run(cfg *config.AppConfig) error {
@@ -55,9 +56,13 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	}
 	botUserID := authResp.UserID
 
-	// Resolve channel filters
+	// Resolve channel filters: CLI flag > config > all
+	channels := c.Channel
+	if len(channels) == 0 {
+		channels = cfg.Config.Listen.Channels
+	}
 	filterChannels := map[string]bool{}
-	for _, ch := range c.Channel {
+	for _, ch := range channels {
 		id := resolveChannel(api, ch)
 		filterChannels[id] = true
 	}
@@ -95,6 +100,16 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 		return channelID
 	}
 
+	// Build ignore set: CLI flag > config
+	ignoreList := c.Ignore
+	if len(ignoreList) == 0 {
+		ignoreList = cfg.Config.Listen.Ignore
+	}
+	ignoreUsers := map[string]bool{}
+	for _, u := range ignoreList {
+		ignoreUsers[strings.ToLower(u)] = true
+	}
+
 	// Voice mapping from config: user display name or ID → voice
 	voiceMap := cfg.Config.Listen.VoiceMap
 
@@ -120,9 +135,12 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 	ui.Success("Listening on Slack")
 	ui.KV("Voice", defaultVoice)
 	if len(filterChannels) > 0 {
-		ui.KV("Channels", strings.Join(c.Channel, ", "))
+		ui.KV("Channels", strings.Join(channels, ", "))
 	} else {
 		ui.KV("Channels", "all")
+	}
+	if len(ignoreUsers) > 0 {
+		ui.KV("Ignore", strings.Join(ignoreList, ", "))
 	}
 	if len(voiceMap) > 0 {
 		ui.KV("Voice map", fmt.Sprintf("%d users", len(voiceMap)))
@@ -151,6 +169,11 @@ func (c *ListenCmd) Run(cfg *config.AppConfig) error {
 
 					// Channel filter
 					if len(filterChannels) > 0 && !filterChannels[ev.Channel] {
+						continue
+					}
+
+					// Ignore list: match by user ID or display name (case-insensitive)
+					if ignoreUsers[strings.ToLower(ev.User)] || ignoreUsers[strings.ToLower(getName(ev.User))] {
 						continue
 					}
 

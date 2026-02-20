@@ -24,6 +24,8 @@ type Services struct {
 }
 
 type ListenConfig struct {
+	Channels []string          `json:"channels,omitempty"`  // default channel names or IDs
+	Ignore   []string          `json:"ignore,omitempty"`    // Slack user IDs or display names to skip
 	VoiceMap map[string]string `json:"voice_map,omitempty"` // slack user ID or display name → voice
 }
 
